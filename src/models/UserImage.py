@@ -1,18 +1,16 @@
-from typing import Dict, List, Optional
+from typing import List, Dict, Optional
 
 class UserImage:
-    def __init__(self, asset_id: str, metadata: Optional[Dict] = None, transformations: Optional[List[Dict]] = None):
+    def __init__(self, asset_id: str, metadata: Optional[Dict] = None, transformations: Optional[List[str]] = None):
         self.asset_id = asset_id
         self.metadata = metadata or {}
         self.transformations = transformations or []
         self.preset_applications = []  # List of PresetApplication instances
 
-    def add_preset_application(self, preset_application):
+    def add_preset_application(self, preset_application: 'PresetApplication'):
         if preset_application not in self.preset_applications:
             self.preset_applications.append(preset_application)
             preset_application.user_image = self
 
-    def remove_preset_application(self, preset_application):
-        if preset_application in self.preset_applications:
-            self.preset_applications.remove(preset_application)
-            preset_application.user_image = None
+    def __repr__(self):
+        return f"<UserImage asset_id={self.asset_id} metadata={self.metadata} transformations={self.transformations}>"
