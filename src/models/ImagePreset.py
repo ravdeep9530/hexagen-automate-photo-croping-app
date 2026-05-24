@@ -1,25 +1,18 @@
-from typing import Optional, List
+from typing import List, Optional
 
 class ImagePreset:
-    _id_counter = 1
-    _instances = []
-
-    def __init__(self, name: str, crop_ratio: Optional[str] = None, default_filters: Optional[List[str]] = None, workspace=None):
-        self.id = ImagePreset._id_counter
-        ImagePreset._id_counter += 1
+    def __init__(self, id: int, name: str, crop_ratio: float, default_filters: Optional[List[str]], workspace: 'Workspace'):
+        self.id = id
         self.name = name
         self.crop_ratio = crop_ratio
         self.default_filters = default_filters or []
         self.workspace = workspace
-        ImagePreset._instances.append(self)
-        if workspace:
-            workspace.add_image_preset(self)
 
-    @classmethod
-    def clear_instances(cls):
-        cls._instances = []
-        cls._id_counter = 1
-
-    @classmethod
-    def all(cls):
-        return list(cls._instances)
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'crop_ratio': self.crop_ratio,
+            'default_filters': self.default_filters,
+            'workspace_id': self.workspace.id if self.workspace else None
+        }
