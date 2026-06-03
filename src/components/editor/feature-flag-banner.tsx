@@ -1,34 +1,39 @@
-import * as React from "react";
+import { AlertCircle, Loader2, ScissorsOff } from "lucide-react";
 
-import type { FeatureFlagState } from "../../hooks/use-feature-flag";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 
 export interface FeatureFlagBannerProps {
+  loading?: boolean;
+  enabled?: boolean;
   errorMessage?: string | null;
-  status: FeatureFlagState["status"];
 }
 
-export function FeatureFlagBanner({
-  errorMessage,
-  status,
-}: FeatureFlagBannerProps): React.JSX.Element | null {
-  if (status === "enabled") {
+export const FeatureFlagBanner = ({
+  loading = false,
+  enabled = false,
+  errorMessage = null,
+}: FeatureFlagBannerProps) => {
+  if (enabled) {
     return null;
   }
 
-  const message =
-    status === "loading"
-      ? "Checking whether cropping is available for this user."
-      : status === "error"
-        ? errorMessage ?? "Cropping is currently unavailable. Please try again later."
-        : "Cropping is currently disabled for this user.";
-
-  const title = status === "loading" ? "Checking crop access" : "Cropping unavailable";
+  if (loading) {
+    return (
+      <Alert aria-live="polite" className="border-border/60 bg-muted/40">
+        <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
+        <AlertTitle>Checking cropping access</AlertTitle>
+        <AlertDescription>We are confirming whether the cropping tool is enabled for this user.</AlertDescription>
+      </Alert>
+    );
+  }
 
   return (
-    <Alert aria-live={status === "error" ? "assertive" : "polite"} role="status">
-      <AlertTitle>{title}</AlertTitle>
-      <AlertDescription>{message}</AlertDescription>
+    <Alert aria-live="polite" className="border-amber-500/40 bg-amber-500/5">
+      {errorMessage ? <AlertCircle aria-hidden="true" className="h-4 w-4" /> : <ScissorsOff aria-hidden="true" className="h-4 w-4" />}
+      <AlertTitle>Cropping tool unavailable</AlertTitle>
+      <AlertDescription>
+        {errorMessage ?? "The cropping tool is currently disabled for this account. Please try again later."}
+      </AlertDescription>
     </Alert>
   );
-}
+};
