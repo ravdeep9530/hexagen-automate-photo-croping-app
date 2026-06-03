@@ -1,108 +1,77 @@
-import { useCallback, useState, type DragEvent, type KeyboardEvent } from "react";
+import * as React from "react";
 
 export interface UseFileDropOptions {
   disabled?: boolean;
-  onFiles: (files: File[]) => void;
+  onFilesDropped: (files: File[]) => void;
 }
 
-export interface UseFileDropResult {
+export interface FileDropBindings {
   isDragging: boolean;
-  dropZoneProps: {
-    role: "button";
-    tabIndex: number;
-    onDragEnter: (event: DragEvent<HTMLElement>) => void;
-    onDragOver: (event: DragEvent<HTMLElement>) => void;
-    onDragLeave: (event: DragEvent<HTMLElement>) => void;
-    onDrop: (event: DragEvent<HTMLElement>) => void;
-    onKeyDown: (event: KeyboardEvent<HTMLElement>) => void;
-  };
+  onDragEnter: React.DragEventHandler<HTMLElement>;
+  onDragLeave: React.DragEventHandler<HTMLElement>;
+  onDragOver: React.DragEventHandler<HTMLElement>;
+  onDrop: React.DragEventHandler<HTMLElement>;
 }
 
-const hasFiles = (event: DragEvent<HTMLElement>): boolean =>
-  Array.from(event.dataTransfer.types).includes("Files");
+export function useFileDrop({
+  disabled = false,
+  onFilesDropped,
+}: UseFileDropOptions): FileDropBindings {
+  const [dragDepth, setDragDepth] = React.useState(0);
 
-export const useFileDrop = ({ disabled = false, onFiles }: UseFileDropOptions): UseFileDropResult => {
-  const [dragDepth, setDragDepth] = useState(0);
-
-  const resetDrag = useCallback(() => {
-    setDragDepth(0);
-  }, []);
-
-  const onDragEnter = useCallback(
-    (event: DragEvent<HTMLElement>) => {
-      if (disabled || !hasFiles(event)) {
-        return;
-      }
-
+  const onDragEnter = React.useCallback<React.DragEventHandler<HTMLElement>>(
+    (event) => {
       event.preventDefault();
-      event.stopPropagation();
-      setDragDepth((depth) => depth + 1);
-    },
-    [disabled],
-  );
 
-  const onDragOver = useCallback(
-    (event: DragEvent<HTMLElement>) => {
-      if (disabled || !hasFiles(event)) {
-        return;
-      }
-
-      event.preventDefault();
-      event.stopPropagation();
-      event.dataTransfer.dropEffect = "copy";
-    },
-    [disabled],
-  );
-
-  const onDragLeave = useCallback(
-    (event: DragEvent<HTMLElement>) => {
-      if (disabled || !hasFiles(event)) {
-        return;
-      }
-
-      event.preventDefault();
-      event.stopPropagation();
-      setDragDepth((depth) => Math.max(depth - 1, 0));
-    },
-    [disabled],
-  );
-
-  const onDrop = useCallback(
-    (event: DragEvent<HTMLElement>) => {
       if (disabled) {
         return;
       }
 
+      setDragDepth((current) => current + 1);
+    },
+    [disabled],
+  );
+
+  const onDragLeave = React.useCallback<React.DragEventHandler<HTMLElement>>(
+    (event) => {
       event.preventDefault();
-      event.stopPropagation();
-      resetDrag();
+
+      if (disabled) {
+        return;
+      }
+
+      setDragDepth((current) => Math.max(0, current - 1));
+    },
+    [disabled],
+  );
+
+  const onDragOver = React.useCallback<React.DragEventHandler<HTMLElement>>((event) => {
+    event.preventDefault();
+  }, []);
+
+  const onDrop = React.useCallback<React.DragEventHandler<HTMLElement>>(
+    (event) => {
+      event.preventDefault();
+      setDragDepth(0);
+
+      if (disabled) {
+        return;
+      }
 
       const files = Array.from(event.dataTransfer.files ?? []);
 
       if (files.length > 0) {
-        onFiles(files);
+        onFilesDropped(files);
       }
     },
-    [disabled, onFiles, resetDrag],
+    [disabled, onFilesDropped],
   );
-
-  const onKeyDown = useCallback((event: KeyboardEvent<HTMLElement>) => {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      event.currentTarget.click();
-    }
-  }, []);
 
   return {
     isDragging: dragDepth > 0,
-    dropZoneProps: {
-      role: "button",
-      tabIndex: disabled ? -1 : 0,
-      onDragEnter,
-      onDragOver,
-      onDragLeave,
-      onDrop,
-      onKeyDown,
-    },
+    onDragEnter,
+    onDragLeave,
+    onDragOver,
+    onDrop,
   };
-};
+}
