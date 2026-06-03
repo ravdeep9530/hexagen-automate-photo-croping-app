@@ -1,212 +1,166 @@
-import { ImagePlus, Loader2, UploadCloud, XCircle } from "lucide-react";
-import { useEffect, useId, useRef, useState, type ChangeEvent } from "react";
-import Cropper, { type Area } from "react-easy-crop";
+import * as React from "react";
+import type { StoreApi } from "zustand/vanilla";
 
 import { useFileDrop } from "../../hooks/use-file-drop";
 import { uploadImage as defaultUploadImage } from "../../lib/api-client";
-import { validateUploadFile, DEFAULT_MAX_UPLOAD_SIZE_BYTES } from "../../lib/file-validators";
+import {
+  DEFAULT_MAX_FILE_SIZE_BYTES,
+  validateImageFile,
+} from "../../lib/file-validators";
 import { photoStore, type PhotoStore } from "../../store/photo-store";
-import type { UploadZoneApiClient, UploadZoneStatus } from "../../types/upload";
+import type { ApiResult, UploadImageResponse } from "../../types/entities";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 
-export interface UploadZoneProps {
-  store?: PhotoStore;
-  apiClient?: UploadZoneApiClient;
-  maxSizeBytes?: number;
-  userId?: string | null;
-  onUploaded?: (imageId: string) => void;
+export interface CropArea {
+  height: number;
+  width: number;
+  x: number;
+  y: number;
 }
 
-const cx = (...classNames: Array<string | false | null | undefined>): string =>
-  classNames.filter(Boolean).join(" ");
+export interface UploadZoneProps {
+  maxFileSizeBytes?: number;
+  onCropChange?: (area: CropArea | null) => void;
+  store?: StoreApi<PhotoStore>;
+  uploadImage?: typeof defaultUploadImage;
+}
 
-const getErrorMessage = (messages: string[]): string => messages.join(" ");
+function createObjectUrl(file: File): string {
+  return URL.createObjectURL(file);
+}
 
-export const UploadZone = ({
+export default function UploadZone({
+  maxFileSizeBytes = DEFAULT_MAX_FILE_SIZE_BYTES,
+  onCropChange,
   store = photoStore,
-  apiClient = { uploadImage: defaultUploadImage },
-  maxSizeBytes = DEFAULT_MAX_UPLOAD_SIZE_BYTES,
-  userId,
-  onUploaded,
-}: UploadZoneProps) => {
-  const inputId = useId();
-  const errorId = useId();
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [status, setStatus] = useState<UploadZoneStatus>({ state: "idle", message: null });
-  const [crop, setCrop] = useState({ x: 0, y: 0 });
-  const [zoom, setZoom] = useState(1);
+  uploadImage = defaultUploadImage,
+}: UploadZoneProps): React.JSX.Element {
+  const inputRef = React.useRef<HTMLInputElement | null>(null);
+  const [errorMessage, setErrorMessage] = React.useState("");
+  const [isUploading, setIsUploading] = React.useState(false);
+  const [previewUrl, setPreviewUrl] = React.useState<string | null>(null);
 
-  useEffect(() => {
-    if (!selectedFile) {
-      setPreviewUrl(null);
-      return undefined;
-    }
+  const processFile = React.useCallback(
+    async (file: File) => {
+      const validationResult = validateImageFile(file, maxFileSizeBytes);
 
-    const url = URL.createObjectURL(selectedFile);
-    setPreviewUrl(url);
+      if (!validationResult.valid) {
+        setErrorMessage(validationResult.message);
+        return;
+      }
 
-    return () => {
-      URL.revokeObjectURL(url);
-    };
-  }, [selectedFile]);
+      setErrorMessage("");
+      setIsUploading(true);
+      const nextPreviewUrl = createObjectUrl(file);
+      setPreviewUrl((currentPreviewUrl) => {
+        if (currentPreviewUrl !== null) {
+          URL.revokeObjectURL(currentPreviewUrl);
+        }
 
-  const handleFiles = async (files: File[]) => {
-    const file = files[0] ?? null;
-    const validation = validateUploadFile(file, { maxSizeBytes });
-
-    if (!validation.valid || !file) {
-      setSelectedFile(null);
-      setStatus({ state: "error", message: getErrorMessage(validation.errors.map((error) => error.message)) });
-      return;
-    }
-
-    setSelectedFile(file);
-    setStatus({ state: "uploading", message: "Uploading image." });
-
-    const result = await apiClient.uploadImage({
-      file,
-      filename: file.name,
-      userId,
-    });
-
-    if (result.error) {
-      store.getState().addValidationFailure({
-        imageId: "client-upload",
-        code: result.error.code,
-        message: result.error.message,
+        return nextPreviewUrl;
       });
-      setStatus({ state: "error", message: result.error.message });
-      return;
-    }
 
-    store.getState().addImage(result.data.image);
-    setStatus({ state: "uploaded", message: `${result.data.image.filename} uploaded successfully.` });
-    onUploaded?.(result.data.image.id);
-  };
+      const result: ApiResult<UploadImageResponse> = await uploadImage({
+        file,
+        filename: file.name,
+      });
 
-  const { isDragging, dropZoneProps } = useFileDrop({
-    disabled: status.state === "uploading",
-    onFiles: handleFiles,
+      if (!result.ok) {
+        setErrorMessage(result.error.message);
+        setIsUploading(false);
+        return;
+      }
+
+      store.getState().addImage(result.data.image);
+      onCropChange?.(null);
+      setIsUploading(false);
+    },
+    [maxFileSizeBytes, onCropChange, store, uploadImage],
+  );
+
+  const handleFiles = React.useCallback(
+    (files: File[]) => {
+      const firstFile = files[0];
+
+      if (firstFile !== undefined) {
+        void processFile(firstFile);
+      }
+    },
+    [processFile],
+  );
+
+  const { isDragging, onDragEnter, onDragLeave, onDragOver, onDrop } = useFileDrop({
+    onFilesDropped: handleFiles,
   });
 
-  const handleInputChange = (event: ChangeEvent<HTMLInputElement>) => {
-    void handleFiles(Array.from(event.target.files ?? []));
-    event.target.value = "";
-  };
+  const handleInputChange = React.useCallback<React.ChangeEventHandler<HTMLInputElement>>(
+    (event) => {
+      const file = event.target.files?.[0];
 
-  const handleCropComplete = (_croppedArea: Area, croppedAreaPixels: Area) => {
-    if (!selectedFile) {
-      return;
-    }
+      if (file !== undefined) {
+        void processFile(file);
+      }
+    },
+    [processFile],
+  );
 
-    store.getState().updateCrop({
-      imageId: selectedFile.name,
-      x: croppedAreaPixels.x,
-      y: croppedAreaPixels.y,
-      width: croppedAreaPixels.width,
-      height: croppedAreaPixels.height,
-      aspectRatio: null,
-    });
-  };
-
-  const openFileDialog = () => {
-    fileInputRef.current?.click();
-  };
-
-  const errorMessage = status.state === "error" ? status.message : null;
+  React.useEffect(() => {
+    return () => {
+      if (previewUrl !== null) {
+        URL.revokeObjectURL(previewUrl);
+      }
+    };
+  }, [previewUrl]);
 
   return (
-    <section className="space-y-4" aria-label="Image upload">
-      {errorMessage ? (
-        <Alert
-          id={errorId}
-          aria-live="assertive"
-          className="border-destructive/60 bg-destructive/5"
-        >
-          <div className="flex items-start gap-3">
-            <XCircle aria-hidden="true" className="mt-0.5 h-5 w-5 shrink-0" />
-            <div>
-              <AlertTitle>Upload failed</AlertTitle>
-              <AlertDescription>{errorMessage}</AlertDescription>
-            </div>
-          </div>
+    <section className="space-y-4">
+      {errorMessage.length > 0 ? (
+        <Alert aria-live="assertive" role="alert">
+          <AlertTitle>Upload error</AlertTitle>
+          <AlertDescription>{errorMessage}</AlertDescription>
         </Alert>
       ) : null}
-
       <div
-        {...dropZoneProps}
-        onClick={openFileDialog}
-        aria-label="Upload JPG, PNG, or WebP image"
-        aria-describedby={errorMessage ? errorId : undefined}
-        className={cx(
-          "group flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-8 text-center outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-          isDragging ? "border-primary bg-primary/10" : "border-muted-foreground/30 bg-background hover:bg-muted/50",
-          status.state === "uploading" && "cursor-wait opacity-70",
-        )}
+        aria-busy={isUploading}
+        aria-label="Upload image"
+        className={`rounded-lg border border-dashed p-8 text-center ${
+          isDragging ? "border-blue-500 bg-blue-50" : "border-slate-300"
+        }`}
+        onClick={() => inputRef.current?.click()}
+        onDragEnter={onDragEnter}
+        onDragLeave={onDragLeave}
+        onDragOver={onDragOver}
+        onDrop={onDrop}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            inputRef.current?.click();
+          }
+        }}
+        role="button"
+        tabIndex={0}
       >
         <input
-          ref={fileInputRef}
-          id={inputId}
-          className="sr-only"
-          type="file"
-          accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+          accept="image/jpeg,image/png,image/webp"
+          aria-label="Choose an image to upload"
+          className="hidden"
           onChange={handleInputChange}
-          disabled={status.state === "uploading"}
-          aria-label="Choose image file"
+          ref={inputRef}
+          type="file"
         />
-        <div className="mb-3 rounded-full bg-muted p-3 text-muted-foreground group-hover:text-foreground">
-          {status.state === "uploading" ? (
-            <Loader2 aria-hidden="true" className="h-6 w-6 animate-spin" />
-          ) : (
-            <UploadCloud aria-hidden="true" className="h-6 w-6" />
-          )}
-        </div>
-        <p className="text-sm font-medium">Drag and drop an image, or browse files</p>
-        <p className="mt-1 text-xs text-muted-foreground">JPG, PNG, or WebP up to {Math.round(maxSizeBytes / 1024 / 1024)} MB</p>
+        <p className="font-medium">Drag and drop a JPG, PNG, or WEBP image here</p>
+        <p className="text-sm text-slate-600">or press Enter/Space to browse for a file</p>
       </div>
-
-      {previewUrl ? (
-        <div className="overflow-hidden rounded-xl border bg-card">
-          <div className="flex items-center gap-2 border-b px-4 py-3">
-            <ImagePlus aria-hidden="true" className="h-4 w-4" />
-            <h3 className="text-sm font-medium">Selected image preview</h3>
-          </div>
-          <div className="relative h-72 w-full bg-muted">
-            <Cropper
-              image={previewUrl}
-              crop={crop}
-              zoom={zoom}
-              aspect={1}
-              onCropChange={setCrop}
-              onZoomChange={setZoom}
-              onCropComplete={handleCropComplete}
-            />
-          </div>
-          <div className="flex items-center justify-between gap-4 px-4 py-3 text-sm text-muted-foreground">
-            <span className="truncate">{selectedFile?.name}</span>
-            <label className="flex items-center gap-2">
-              Zoom
-              <input
-                aria-label="Preview zoom"
-                type="range"
-                min="1"
-                max="3"
-                step="0.1"
-                value={zoom}
-                onChange={(event) => setZoom(Number(event.target.value))}
-              />
-            </label>
-          </div>
+      {previewUrl !== null ? (
+        <div className="space-y-2">
+          <p className="text-sm font-medium">Preview</p>
+          <img
+            alt="Selected upload preview"
+            className="max-h-64 rounded-md object-contain"
+            src={previewUrl}
+          />
         </div>
-      ) : null}
-
-      {status.message && status.state !== "error" ? (
-        <p className="text-sm text-muted-foreground" aria-live="polite">
-          {status.message}
-        </p>
       ) : null}
     </section>
   );
-};
+}
