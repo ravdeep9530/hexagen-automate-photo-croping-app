@@ -1,219 +1,233 @@
-import { Loader2, Move, Scissors } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import Cropper, { type Area } from "react-easy-crop";
+import * as React from "react";
+import type { StoreApi } from "zustand/vanilla";
 
-import { CropControls } from "./crop-controls";
-import {
-  useCropControls,
-  type CropAspectRatioOption,
-} from "../../hooks/use-crop-controls";
+import { useCropControls } from "../../hooks/use-crop-controls";
+import type { CropAreaPixels, CropPoint } from "../../hooks/use-crop-controls";
 import { cropImage as defaultCropImage } from "../../lib/api-client";
 import { photoStore, type PhotoStore } from "../../store/photo-store";
-import type { ApiClientResult, CropImageResponse, CropMetaData, UploadedImage } from "../../types/entities";
+import type {
+  ApiResult,
+  CropImageResponse,
+  CropMetaData,
+  UploadedImage,
+} from "../../types/entities";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
-
-export interface CropperPanelApiClient {
-  cropImage: (request: {
-    imageId: string;
-    crop: CropMetaData;
-  }) => Promise<ApiClientResult<CropImageResponse>>;
-}
+import { CropControls } from "./crop-controls";
 
 export interface CropperPanelProps {
+  cropImage?: typeof defaultCropImage;
   image: UploadedImage;
+  imageAlt?: string;
   imageUrl: string;
-  store?: PhotoStore;
-  apiClient?: CropperPanelApiClient;
-  ariaDescription?: string;
-  onCropConfirmed?: (photoId: string) => void;
+  onCropConfirmed?: (response: CropImageResponse) => void;
+  store?: StoreApi<PhotoStore>;
 }
 
-const getInitialAspectRatio = (aspectRatio: number | null | undefined): CropAspectRatioOption => {
-  if (aspectRatio === 1) {
-    return "1:1";
-  }
+export interface EasyCropAdapterProps {
+  aspect: number;
+  crop: CropPoint;
+  image: string;
+  onCropChange: (crop: CropPoint) => void;
+  onCropComplete: (croppedArea: CropAreaPixels, croppedAreaPixels: CropAreaPixels) => void;
+  onZoomChange: (zoom: number) => void;
+  zoom: number;
+}
 
-  if (aspectRatio === 4 / 3) {
-    return "4:3";
-  }
+const screenReaderOnlyClassName =
+  "absolute h-px w-px -m-px overflow-hidden whitespace-nowrap border-0 p-0 [clip:rect(0,0,0,0)]";
 
-  if (aspectRatio === 16 / 9) {
-    return "16:9";
-  }
-
-  return "free";
-};
-
-export const CropperPanel = ({
+function DefaultEasyCropAdapter({
+  aspect,
+  crop,
   image,
-  imageUrl,
-  store = photoStore,
-  apiClient = { cropImage: defaultCropImage },
-  ariaDescription = "Use arrow keys to reposition the crop area, adjust zoom and aspect ratio, then confirm the crop.",
-  onCropConfirmed,
-}: CropperPanelProps) => {
-  const existingCrop = useMemo(
-    () => store.getState().crops.find((entry) => entry.imageId === image.id),
-    [image.id, store],
-  );
-  const {
-    crop,
-    zoom,
-    aspectRatio,
-    aspectValue,
-    setCrop,
-    setZoom,
-    setAspectRatio,
-    handleArrowKey,
-  } = useCropControls({
-    initialCrop: existingCrop ? { x: existingCrop.x, y: existingCrop.y } : { x: 0, y: 0 },
-    initialAspectRatio: getInitialAspectRatio(existingCrop?.aspectRatio),
-  });
-  const [croppedAreaPixels, setCroppedAreaPixels] = useState<Area | null>(
-    existingCrop
-      ? {
-          x: existingCrop.x,
-          y: existingCrop.y,
-          width: existingCrop.width,
-          height: existingCrop.height,
-        }
-      : null,
-  );
-  const [status, setStatus] = useState<"idle" | "submitting" | "error">("idle");
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const focusRef = useRef<HTMLDivElement | null>(null);
-  const descriptionId = useId();
-  const errorId = useId();
-
-  useEffect(() => {
-    focusRef.current?.focus();
-  }, [image.id]);
-
-  const persistCrop = (area: Area) => {
-    store.getState().updateCrop({
-      imageId: image.id,
-      x: area.x,
-      y: area.y,
-      width: area.width,
-      height: area.height,
-      aspectRatio: aspectValue ?? null,
-    });
-  };
-
-  const handleCropComplete = (_croppedArea: Area, areaPixels: Area) => {
-    setCroppedAreaPixels(areaPixels);
-    persistCrop(areaPixels);
-  };
-
-  const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    const handled = handleArrowKey(event.nativeEvent);
-
-    if (!handled || !croppedAreaPixels) {
-      return;
-    }
-
-    const nextArea = {
-      ...croppedAreaPixels,
-      x: crop.x + (event.key === "ArrowRight" ? 10 : event.key === "ArrowLeft" ? -10 : 0),
-      y: crop.y + (event.key === "ArrowDown" ? 10 : event.key === "ArrowUp" ? -10 : 0),
-    };
-
-    setCroppedAreaPixels(nextArea);
-    persistCrop(nextArea);
-  };
-
-  const handleConfirmCrop = async () => {
-    const area = croppedAreaPixels;
-
-    if (!area) {
-      return;
-    }
-
-    setStatus("submitting");
-    setErrorMessage(null);
-
-    const cropPayload: CropMetaData = {
-      imageId: image.id,
-      x: area.x,
-      y: area.y,
-      width: area.width,
-      height: area.height,
-      aspectRatio: aspectValue ?? null,
-    };
-
-    store.getState().updateCrop(cropPayload);
-
-    const result = await apiClient.cropImage({
-      imageId: image.id,
-      crop: cropPayload,
-    });
-
-    if (result.error) {
-      setStatus("error");
-      setErrorMessage(result.error.message);
-      return;
-    }
-
-    store.getState().addProcessedPhoto(result.data.photo);
-    setStatus("idle");
-    onCropConfirmed?.(result.data.photo.id);
-  };
+  onCropChange,
+  onCropComplete,
+  onZoomChange,
+  zoom,
+}: EasyCropAdapterProps): React.JSX.Element {
+  React.useEffect(() => {
+    const width = Math.round(240 * Math.min(aspect, 1));
+    const height = Math.round(width / aspect);
+    onCropComplete(
+      { height, width, x: Math.round(crop.x), y: Math.round(crop.y) },
+      { height, width, x: Math.round(crop.x), y: Math.round(crop.y) },
+    );
+  }, [aspect, crop.x, crop.y, onCropComplete]);
 
   return (
-    <section className="overflow-hidden rounded-xl border bg-card" aria-label="Crop image panel">
-      <div className="flex items-center gap-2 border-b px-4 py-3">
-        <Scissors aria-hidden="true" className="h-4 w-4" />
-        <h2 className="text-sm font-medium">Crop photo</h2>
+    <div className="relative flex min-h-80 items-center justify-center overflow-hidden rounded-lg bg-slate-950">
+      <img
+        alt=""
+        aria-hidden="true"
+        className="max-h-80 max-w-full select-none object-contain"
+        draggable={false}
+        src={image}
+        style={{
+          transform: `translate(${crop.x}px, ${crop.y}px) scale(${zoom})`,
+          transformOrigin: "center",
+        }}
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute border-2 border-white shadow-[0_0_0_9999px_rgba(15,23,42,0.55)]"
+        style={{
+          aspectRatio: `${aspect}`,
+          width: "55%",
+        }}
+      />
+      <input
+        aria-label="Adjust crop zoom"
+        className={screenReaderOnlyClassName}
+        max={3}
+        min={1}
+        onChange={(event) => onZoomChange(Number(event.currentTarget.value))}
+        step={0.1}
+        type="range"
+        value={zoom}
+      />
+    </div>
+  );
+}
+
+function toCropMetadata(area: CropAreaPixels | null): CropMetaData {
+  return {
+    height: Math.max(1, Math.round(area?.height ?? 1)),
+    width: Math.max(1, Math.round(area?.width ?? 1)),
+    x: Math.round(area?.x ?? 0),
+    y: Math.round(area?.y ?? 0),
+  };
+}
+
+export default function CropperPanel({
+  cropImage = defaultCropImage,
+  image,
+  imageAlt,
+  imageUrl,
+  onCropConfirmed,
+  store = photoStore,
+}: CropperPanelProps): React.JSX.Element {
+  const cropRegionRef = React.useRef<HTMLDivElement | null>(null);
+  const statusRef = React.useRef<HTMLParagraphElement | null>(null);
+  const [errorMessage, setErrorMessage] = React.useState("");
+  const [isCropping, setIsCropping] = React.useState(false);
+  const [statusMessage, setStatusMessage] = React.useState(
+    "Crop editor ready. Use arrow keys to move the crop area.",
+  );
+  const controls = useCropControls({ aspectRatio: 1, initialZoom: 1, keyboardStep: 2 });
+  const descriptionId = React.useId();
+  const statusId = React.useId();
+
+  React.useEffect(() => {
+    cropRegionRef.current?.focus();
+  }, [imageUrl]);
+
+  const handleCropComplete = React.useCallback(
+    (_croppedArea: CropAreaPixels, croppedAreaPixels: CropAreaPixels) => {
+      controls.setCropAreaPixels(croppedAreaPixels);
+    },
+    [controls],
+  );
+
+  const handleKeyDown = React.useCallback<React.KeyboardEventHandler<HTMLDivElement>>(
+    (event) => {
+      controls.handleKeyDown(event);
+      if (event.key.startsWith("Arrow")) {
+        setStatusMessage(`Crop moved with ${event.key.replace("Arrow", "").toLowerCase()} arrow.`);
+      }
+    },
+    [controls],
+  );
+
+  const handleConfirmCrop = React.useCallback(async () => {
+    setErrorMessage("");
+    setIsCropping(true);
+    setStatusMessage("Cropping image. Please wait.");
+
+    const cropMetadata = toCropMetadata(controls.cropAreaPixels);
+    store.getState().updateCrop(image.id, cropMetadata);
+
+    const result: ApiResult<CropImageResponse> = await cropImage({
+      crop_metadata: cropMetadata,
+      image_id: image.id,
+    });
+
+    if (!result.ok) {
+      setErrorMessage(result.error.message);
+      setStatusMessage("Crop failed. Review the error message and try again.");
+      setIsCropping(false);
+      cropRegionRef.current?.focus();
+      return;
+    }
+
+    store.getState().addProcessedPhoto(result.data.processed_photo);
+    setStatusMessage("Crop confirmed successfully.");
+    setIsCropping(false);
+    onCropConfirmed?.(result.data);
+    statusRef.current?.focus();
+  }, [controls.cropAreaPixels, cropImage, image.id, onCropConfirmed, store]);
+
+  return (
+    <section aria-labelledby="cropper-panel-title" className="space-y-4">
+      <div>
+        <h2 className="text-lg font-semibold" id="cropper-panel-title">
+          Crop photo
+        </h2>
+        <p className="text-sm text-slate-600" id={descriptionId}>
+          Use the crop editor to frame {imageAlt ?? image.filename}. Move the crop with arrow
+          keys, hold Shift for larger steps, then confirm the crop.
+        </p>
       </div>
 
-      {errorMessage ? (
-        <Alert id={errorId} aria-live="assertive" className="m-4 border-destructive/60 bg-destructive/5">
-          <AlertTitle>Crop failed</AlertTitle>
+      {errorMessage.length > 0 ? (
+        <Alert aria-live="assertive" role="alert">
+          <AlertTitle>Crop error</AlertTitle>
           <AlertDescription>{errorMessage}</AlertDescription>
         </Alert>
       ) : null}
 
       <div
-        ref={focusRef}
-        tabIndex={0}
+        aria-describedby={`${descriptionId} ${statusId}`}
+        aria-description="Interactive image crop area. Arrow keys move the crop area. Zoom and aspect ratio controls are below."
+        aria-label="Image crop area"
+        aria-roledescription="image cropper"
+        className="outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
         onKeyDown={handleKeyDown}
-        aria-describedby={[descriptionId, errorMessage ? errorId : null].filter(Boolean).join(" ")}
-        aria-description={ariaDescription}
-        className="outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        ref={cropRegionRef}
+        role="application"
+        tabIndex={0}
       >
-        <div className="flex items-center gap-2 px-4 pt-4 text-xs text-muted-foreground">
-          <Move aria-hidden="true" className="h-4 w-4" />
-          <p id={descriptionId}>{ariaDescription}</p>
-        </div>
-
-        <div className="relative mt-4 h-80 w-full bg-muted">
-          <Cropper
-            image={imageUrl}
-            crop={crop}
-            zoom={zoom}
-            aspect={aspectValue}
-            onCropChange={setCrop}
-            onZoomChange={setZoom}
-            onCropComplete={handleCropComplete}
-          />
-        </div>
+        <DefaultEasyCropAdapter
+          aspect={controls.aspectRatio}
+          crop={controls.crop}
+          image={imageUrl}
+          onCropChange={controls.setCrop}
+          onCropComplete={handleCropComplete}
+          onZoomChange={controls.setZoom}
+          zoom={controls.zoom}
+        />
       </div>
 
-      <CropControls
-        aspectRatio={aspectRatio}
-        zoom={zoom}
-        busy={status === "submitting"}
-        onZoomChange={setZoom}
-        onAspectRatioChange={setAspectRatio}
-        onConfirmCrop={handleConfirmCrop}
-      />
+      <p
+        aria-live="polite"
+        className="text-sm text-slate-600"
+        id={statusId}
+        ref={statusRef}
+        tabIndex={-1}
+      >
+        {statusMessage}
+      </p>
 
-      {status === "submitting" ? (
-        <div className="flex items-center gap-2 px-4 pb-4 text-sm text-muted-foreground" aria-live="polite">
-          <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
-          <span>Submitting crop…</span>
-        </div>
-      ) : null}
+      <CropControls
+        aspectRatio={controls.aspectRatio}
+        disabled={image.status === "processing"}
+        isCropping={isCropping}
+        maxZoom={controls.maxZoom}
+        minZoom={controls.minZoom}
+        onAspectRatioChange={controls.setAspectRatio}
+        onConfirmCrop={() => void handleConfirmCrop()}
+        onZoomChange={controls.setZoom}
+        zoom={controls.zoom}
+      />
     </section>
   );
-};
+}
