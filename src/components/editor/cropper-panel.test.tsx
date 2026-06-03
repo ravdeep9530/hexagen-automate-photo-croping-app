@@ -1,22 +1,29 @@
+import * as React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
 
-const cropperPanelSource = readFileSync("src/components/editor/cropper-panel.tsx", "utf8");
-const cropControlsSource = readFileSync("src/components/editor/crop-controls.tsx", "utf8");
+import CropperPanel from "./cropper-panel";
+import type { UploadedImage } from "../../types/entities";
 
-describe("CropperPanel source", () => {
-  it("renders react-easy-crop integration and accessibility wiring", () => {
-    expect(cropperPanelSource).toContain('from "react-easy-crop"');
-    expect(cropperPanelSource).toContain("aria-description");
-    expect(cropperPanelSource).toContain("focusRef.current?.focus()");
-    expect(cropperPanelSource).toContain("handleArrowKey");
-    expect(cropperPanelSource).toContain("apiClient.cropImage");
-    expect(cropperPanelSource).toContain("addProcessedPhoto");
-  });
+const uploadedImage: UploadedImage = {
+  filename: "portrait.jpg",
+  id: "image-1",
+  status: "uploaded",
+  uploaded_at: "2024-01-01T00:00:00Z",
+  user_id: null,
+};
 
-  it("provides crop controls for zoom, aspect ratio, and confirming crop", () => {
-    expect(cropControlsSource).toContain("Crop zoom");
-    expect(cropControlsSource).toContain("Crop aspect ratio");
-    expect(cropControlsSource).toContain("Confirm crop");
+describe("CropperPanel", () => {
+  it("renders cropper guidance, accessibility attributes, and controls", () => {
+    const markup = renderToStaticMarkup(
+      <CropperPanel image={uploadedImage} imageUrl="blob:photo-preview" />,
+    );
+
+    expect(markup).toContain("Interactive image crop area");
+    expect(markup).toContain("role=\"application\"");
+    expect(markup).toContain("Confirm crop");
+    expect(markup).toContain("Aspect ratio");
+    expect(markup).toContain("Crop editor ready. Use arrow keys to move the crop area.");
+    expect(markup).toContain("aria-roledescription=\"image cropper\"");
   });
 });
