@@ -1,47 +1,47 @@
 import { randomUUID } from 'crypto';
 
-import { cropImage, getImageDimensions, validateCropParameters } from '../../../lib/image-utils';
-import { createStorageClient } from '../../../lib/storage';
-import type { ApiErrorResponse, SaveCroppedPhotoRequest, SaveCroppedPhotoResponse } from '../../../types/api';
+import { ApiRouteError, createApiError, formatApiErrorResponse } from '../../../lib/error-utils';
+import { cropImage, getImageMetadata, uploadToStorage, validateCropBounds } from '../../../lib/image-utils';
+import { getObjectFromS3 } from '../../../lib/s3-storage';
+import type { SaveCroppedPhotoRequest, SaveCroppedPhotoResponse } from '../../../types/api';
+import type { CropParameters } from '../../../types/crop-parameters';
 
-export const runtime = 'nodejs';
-
-function jsonResponse<T>(body: T, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      'content-type': 'application/json',
-    },
-  });
-}
-
-function errorResponse(message: string, status: number): Response {
-  return jsonResponse<ApiErrorResponse>({ message }, status);
+function json(body: unknown, status = 200): Response {
+  return Response.json(body, { status });
 }
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
-function parseRequestBody(body: unknown): SaveCroppedPhotoRequest | null {
+async function parseRequest(request: Request): Promise<CropParameters> {
+  let body: unknown;
+
+  try {
+    body = await request.json();
+  } catch {
+    throw createApiError(400, 'INVALID_JSON', 'Request body must be valid JSON.');
+  }
+
   if (!body || typeof body !== 'object') {
-    return null;
+    throw createApiError(400, 'INVALID_REQUEST', 'Request body must be a JSON object.');
   }
 
-  const candidate = body as Record<string, unknown>;
+  const { imageId, x, y, width, height, aspectRatio } = body as Partial<SaveCroppedPhotoRequest>;
 
-  if (typeof candidate.imageId !== 'string') {
-    return null;
+  if (typeof imageId !== 'string' || !imageId.trim()) {
+    throw createApiError(400, 'INVALID_REQUEST', 'imageId is required.');
   }
 
-  const { x, y, width, height, aspectRatio } = candidate;
-
-  if (![x, y, width, height, aspectRatio].every(isFiniteNumber)) {
-    return null;
+  const numericEntries = { x, y, width, height, aspectRatio };
+  for (const [key, value] of Object.entries(numericEntries)) {
+    if (!isFiniteNumber(value)) {
+      throw createApiError(400, 'INVALID_REQUEST', `${key} must be a finite number.`);
+    }
   }
 
   return {
-    imageId: candidate.imageId,
+    imageId: imageId.trim(),
     x,
     y,
     width,
@@ -50,65 +50,59 @@ function parseRequestBody(body: unknown): SaveCroppedPhotoRequest | null {
   };
 }
 
-function inferExtension(contentType: string | null): string {
-  switch (contentType) {
-    case 'image/png':
-      return 'png';
-    case 'image/webp':
-      return 'webp';
-    default:
-      return 'jpg';
-  }
-}
-
 export async function POST(request: Request): Promise<Response> {
-  let body: unknown;
-
   try {
-    body = await request.json();
-  } catch {
-    return errorResponse('Invalid JSON body', 400);
-  }
+    const crop = await parseRequest(request);
+    const sourceKey = crop.imageId;
+    const sourceBuffer = await getObjectFromS3(sourceKey);
 
-  const cropRequest = parseRequestBody(body);
-
-  if (!cropRequest) {
-    return errorResponse('imageId, x, y, width, height, and aspectRatio are required and must be valid types', 400);
-  }
-
-  const storage = createStorageClient();
-  const sourceKey = `uploads/${cropRequest.imageId}`;
-
-  try {
-    const sourceImage = await storage.getObject(sourceKey);
-
-    if (!sourceImage) {
-      return errorResponse('Source image not found', 404);
+    if (!sourceBuffer) {
+      throw createApiError(404, 'SOURCE_IMAGE_NOT_FOUND', 'Source image could not be found.');
     }
 
-    const dimensions = await getImageDimensions(sourceImage.body);
-    const validation = validateCropParameters(cropRequest, dimensions);
-
-    if (!validation.valid) {
-      return errorResponse(validation.message, 400);
+    let metadata;
+    try {
+      metadata = await getImageMetadata(sourceBuffer);
+      validateCropBounds(crop, metadata);
+    } catch (error) {
+      if (error instanceof Error) {
+        throw createApiError(422, 'INVALID_CROP', error.message);
+      }
+      throw error;
     }
 
-    const croppedBuffer = await cropImage(cropRequest, sourceImage.body);
+    let croppedBuffer: Buffer;
+    try {
+      croppedBuffer = await cropImage(crop, sourceBuffer);
+    } catch {
+      throw createApiError(500, 'IMAGE_PROCESSING_FAILED', 'Failed to crop image.');
+    }
+
     const croppedImageId = randomUUID();
-    const key = `cropped/${cropRequest.imageId}/${croppedImageId}.${inferExtension(sourceImage.contentType)}`;
-    const { url } = await storage.upload({
-      body: croppedBuffer,
-      contentType: sourceImage.contentType ?? 'image/jpeg',
-      key,
-    });
+    const outputKey = `cropped/${croppedImageId}.jpg`;
 
-    return jsonResponse<SaveCroppedPhotoResponse>({
+    let url: string;
+    try {
+      url = await uploadToStorage(croppedBuffer, outputKey);
+    } catch {
+      throw createApiError(500, 'STORAGE_UPLOAD_FAILED', 'Failed to store cropped image.');
+    }
+
+    const response: SaveCroppedPhotoResponse = {
       croppedImageId,
       url,
-      complianceStatus: 'cropped',
-    });
+      complianceStatus: 'pending',
+    };
+
+    return json(response, 200);
   } catch (error) {
-    console.error('Failed to save cropped photo', error);
-    return errorResponse('Failed to save cropped photo', 500);
+    if (error instanceof ApiRouteError) {
+      return json(formatApiErrorResponse(error), error.status);
+    }
+
+    return json(
+      formatApiErrorResponse(createApiError(500, 'SAVE_CROPPED_PHOTO_FAILED', 'Failed to save cropped photo.')),
+      500,
+    );
   }
 }
