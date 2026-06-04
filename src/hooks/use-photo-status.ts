@@ -1,102 +1,128 @@
-import { useEffect, useMemo, useState } from 'react';
+'use client';
 
-import type { PhotoStatusResponse } from '../types/api';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
-type UsePhotoStatusOptions = {
-  pollIntervalMs?: number;
+import type { PhotoStatusDto } from '../lib/photo-status';
+
+type PhotoStatusResponse = PhotoStatusDto & {
+  sessionId: string;
+  error?: string;
 };
 
-type UsePhotoStatusResult = PhotoStatusResponse & {
-  isLoading: boolean;
+export interface UsePhotoStatusResult {
+  loading: boolean;
   error: string | null;
-  isActive: boolean;
-};
+  status: 'idle' | 'uploaded' | 'cropped';
+  uploadedPhotoUrl: string | null;
+  croppedPhotoUrl: string | null;
+  complianceStatus: string | null;
+  hasUploaded: boolean;
+  hasCropped: boolean;
+  refresh: () => Promise<void>;
+}
 
-const DEFAULT_POLL_INTERVAL_MS = 5000;
-
-const emptyStatus: PhotoStatusResponse = {
-  sessionId: '',
-  hasUploaded: false,
-  hasCropped: false,
+const DEFAULT_STATE: Omit<UsePhotoStatusResult, 'refresh'> = {
+  loading: true,
+  error: null,
+  status: 'idle',
   uploadedPhotoUrl: null,
   croppedPhotoUrl: null,
-  complianceStatus: 'missing_upload',
+  complianceStatus: null,
+  hasUploaded: false,
+  hasCropped: false,
 };
 
-export function usePhotoStatus(
-  sessionId: string | null | undefined,
-  options: UsePhotoStatusOptions = {},
-): UsePhotoStatusResult {
-  const normalizedSessionId = sessionId?.trim() ?? '';
-  const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
-  const [status, setStatus] = useState<PhotoStatusResponse>({
-    ...emptyStatus,
-    sessionId: normalizedSessionId,
-  });
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+function deriveStatus(payload: Pick<PhotoStatusDto, 'hasUploaded' | 'hasCropped'>): UsePhotoStatusResult['status'] {
+  if (payload.hasCropped) {
+    return 'cropped';
+  }
 
-  useEffect(() => {
+  if (payload.hasUploaded) {
+    return 'uploaded';
+  }
+
+  return 'idle';
+}
+
+export function usePhotoStatus(sessionId: string, pollIntervalMs = 5000): UsePhotoStatusResult {
+  const [state, setState] = useState<Omit<UsePhotoStatusResult, 'refresh'>>(DEFAULT_STATE);
+
+  const fetchStatus = useCallback(async () => {
+    const normalizedSessionId = sessionId.trim();
+
     if (!normalizedSessionId) {
-      setStatus({ ...emptyStatus, sessionId: '' });
-      setIsLoading(false);
-      setError(null);
+      setState({
+        ...DEFAULT_STATE,
+        loading: false,
+        error: 'Session ID is required',
+      });
       return;
     }
 
+    setState((current) => ({ ...current, loading: true, error: null }));
+
+    try {
+      const response = await fetch(`/api/photoStatus?sessionId=${encodeURIComponent(normalizedSessionId)}`);
+      const data = (await response.json()) as PhotoStatusResponse;
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Unable to fetch photo status');
+      }
+
+      setState({
+        loading: false,
+        error: null,
+        status: deriveStatus(data),
+        uploadedPhotoUrl: data.uploadedPhotoUrl,
+        croppedPhotoUrl: data.croppedPhotoUrl,
+        complianceStatus: data.complianceStatus,
+        hasUploaded: data.hasUploaded,
+        hasCropped: data.hasCropped,
+      });
+    } catch (error) {
+      setState((current) => ({
+        ...current,
+        loading: false,
+        error: error instanceof Error ? error.message : 'Unable to fetch photo status',
+      }));
+    }
+  }, [sessionId]);
+
+  useEffect(() => {
     let isMounted = true;
+    let intervalId: ReturnType<typeof setInterval> | undefined;
 
-    const loadStatus = async () => {
-      if (isMounted) {
-        setIsLoading(true);
+    const run = async () => {
+      if (!isMounted) {
+        return;
       }
 
-      try {
-        const response = await fetch(`/api/photoStatus?sessionId=${encodeURIComponent(normalizedSessionId)}`);
-        const payload = (await response.json()) as PhotoStatusResponse | { message?: string };
-
-        if (!response.ok) {
-          throw new Error(
-            'message' in payload && typeof payload.message === 'string'
-              ? payload.message
-              : 'Unable to fetch photo status',
-          );
-        }
-
-        if (isMounted) {
-          setStatus(payload as PhotoStatusResponse);
-          setError(null);
-        }
-      } catch (fetchError) {
-        if (isMounted) {
-          setError(fetchError instanceof Error ? fetchError.message : 'Unable to fetch photo status');
-        }
-      } finally {
-        if (isMounted) {
-          setIsLoading(false);
-        }
-      }
+      await fetchStatus();
     };
 
-    void loadStatus();
+    void run();
 
-    const intervalId = window.setInterval(() => {
-      void loadStatus();
-    }, pollIntervalMs);
+    if (pollIntervalMs > 0) {
+      intervalId = setInterval(() => {
+        void run();
+      }, pollIntervalMs);
+    }
 
     return () => {
       isMounted = false;
-      window.clearInterval(intervalId);
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
     };
-  }, [normalizedSessionId, pollIntervalMs]);
+  }, [fetchStatus, pollIntervalMs]);
 
   return useMemo(
     () => ({
-      ...status,
-      isLoading,
-      error,
-      isActive: Boolean(normalizedSessionId),
+      ...state,
+      refresh: fetchStatus,
     }),
-    [error, isLoading, normalizedSessionId, status],
+    [fetchStatus, state],
   );
 }
+
+export default usePhotoStatus;
