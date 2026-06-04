@@ -1,219 +1,251 @@
 'use client';
 
-import { type ChangeEvent, type DragEvent, useCallback, useMemo, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 
-type UploadStatus = 'idle' | 'dragging' | 'uploading' | 'success' | 'error';
+import type { UploadPhotoResponse } from '../types/api';
 
-type UploadResponse = {
-  message?: string;
-  uploadedPhotoUrl?: string;
-  [key: string]: unknown;
-};
+type UploadState = 'idle' | 'dragging' | 'uploading' | 'error' | 'success';
 
-const ACCEPTED_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const ACCEPTED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+const PROGRESS_STEPS = [15, 45, 75, 95];
 
-function formatFileSize(bytes: number) {
-  if (bytes >= 1024 * 1024) {
-    return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
-  }
-
-  return `${Math.ceil(bytes / 1024)} KB`;
+function formatAcceptedTypes(types: string[]) {
+  return types.map((type) => type.replace('image/', '').toUpperCase()).join(', ');
 }
 
-function getValidationError(file: File) {
-  if (!ACCEPTED_TYPES.includes(file.type)) {
-    return 'Please upload a JPG, PNG, or WebP image.';
+function getErrorMessage(error: unknown) {
+  if (error instanceof Error && error.message) {
+    return error.message;
   }
 
-  if (file.size > MAX_FILE_SIZE_BYTES) {
-    return `File size must be ${formatFileSize(MAX_FILE_SIZE_BYTES)} or less.`;
-  }
-
-  return null;
+  return 'Unable to upload your photo right now. Please try again.';
 }
 
-export function PhotoUpload() {
+export default function PhotoUpload() {
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const [status, setStatus] = useState<UploadStatus>('idle');
-  const [error, setError] = useState<string | null>(null);
-  const [progress, setProgress] = useState(0);
-  const [uploadedPhotoUrl, setUploadedPhotoUrl] = useState<string | null>(null);
-  const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
+  const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const browseLabel = useMemo(() => {
-    if (status === 'uploading') {
-      return 'Uploading photo...';
+  const [state, setState] = useState<UploadState>('idle');
+  const [errorMessage, setErrorMessage] = useState('');
+  const [progress, setProgress] = useState(0);
+  const [uploadedFileName, setUploadedFileName] = useState('');
+  const [response, setResponse] = useState<UploadPhotoResponse | null>(null);
+
+  const clearProgressTimer = () => {
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+      progressIntervalRef.current = null;
+    }
+  };
+
+  const resetFeedback = () => {
+    setErrorMessage('');
+    setResponse(null);
+    setUploadedFileName('');
+  };
+
+  const validateFile = (file: File) => {
+    if (!ACCEPTED_MIME_TYPES.includes(file.type)) {
+      return `Please upload a supported image type: ${formatAcceptedTypes(ACCEPTED_MIME_TYPES)}.`;
     }
 
-    return 'Choose a photo';
-  }, [status]);
+    if (file.size > MAX_FILE_SIZE_BYTES) {
+      return 'Please upload an image smaller than 10 MB.';
+    }
 
-  const uploadFile = useCallback((file: File) => {
-    const validationError = getValidationError(file);
+    return '';
+  };
+
+  const uploadFile = async (file: File) => {
+    const validationError = validateFile(file);
 
     if (validationError) {
-      setError(validationError);
-      setStatus('error');
+      clearProgressTimer();
+      setState('error');
       setProgress(0);
-      setUploadedPhotoUrl(null);
-      setUploadedFileName(null);
+      setResponse(null);
+      setUploadedFileName('');
+      setErrorMessage(validationError);
       return;
     }
 
-    setError(null);
-    setStatus('uploading');
-    setProgress(0);
-    setUploadedPhotoUrl(null);
+    resetFeedback();
+    setState('uploading');
+    setProgress(PROGRESS_STEPS[0]);
     setUploadedFileName(file.name);
 
-    const formData = new FormData();
-    formData.append('photo', file);
+    let currentStepIndex = 1;
+    clearProgressTimer();
+    progressIntervalRef.current = setInterval(() => {
+      setProgress((currentProgress) => {
+        if (currentStepIndex >= PROGRESS_STEPS.length) {
+          return currentProgress;
+        }
 
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/uploadPhoto');
-    xhr.responseType = 'json';
+        const nextProgress = PROGRESS_STEPS[currentStepIndex];
+        currentStepIndex += 1;
+        return nextProgress;
+      });
+    }, 250);
 
-    xhr.upload.onprogress = (event) => {
-      if (!event.lengthComputable || event.total === 0) {
-        return;
+    try {
+      const formData = new FormData();
+      formData.append('photo', file);
+
+      const uploadResponse = await fetch('/api/uploadPhoto', {
+        method: 'POST',
+        body: formData,
+      });
+      const payload = (await uploadResponse.json()) as Partial<UploadPhotoResponse> & {
+        error?: string;
+        message?: string;
+      };
+
+      if (!uploadResponse.ok) {
+        throw new Error(payload.error || payload.message || 'Unable to upload your photo right now. Please try again.');
       }
 
-      setProgress(Math.round((event.loaded / event.total) * 100));
-    };
-
-    xhr.onload = () => {
-      const response = (xhr.response ?? {}) as UploadResponse;
-
-      if (xhr.status >= 200 && xhr.status < 300) {
-        setStatus('success');
-        setProgress(100);
-        setUploadedPhotoUrl(typeof response.uploadedPhotoUrl === 'string' ? response.uploadedPhotoUrl : null);
-        return;
-      }
-
-      setStatus('error');
-      setError(response.message || 'Upload failed. Please try again.');
-      setUploadedPhotoUrl(null);
-    };
-
-    xhr.onerror = () => {
-      setStatus('error');
-      setError('Upload failed. Please check your connection and try again.');
-      setUploadedPhotoUrl(null);
-    };
-
-    xhr.send(formData);
-  }, []);
-
-  const handleFiles = useCallback(
-    (files: FileList | null) => {
-      const file = files?.[0];
-      if (!file) {
-        return;
-      }
-
-      uploadFile(file);
-    },
-    [uploadFile],
-  );
-
-  const handleInputChange = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => {
-      handleFiles(event.target.files);
-      event.target.value = '';
-    },
-    [handleFiles],
-  );
-
-  const handleDrop = useCallback(
-    (event: DragEvent<HTMLDivElement>) => {
-      event.preventDefault();
-      setStatus((currentStatus) => (currentStatus === 'uploading' ? currentStatus : 'idle'));
-      handleFiles(event.dataTransfer.files);
-    },
-    [handleFiles],
-  );
-
-  const handleDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    setStatus((currentStatus) => (currentStatus === 'uploading' ? currentStatus : 'dragging'));
-  }, []);
-
-  const handleDragLeave = useCallback((event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    setStatus((currentStatus) => (currentStatus === 'uploading' ? currentStatus : 'idle'));
-  }, []);
+      clearProgressTimer();
+      setProgress(100);
+      setResponse({
+        sessionId: typeof payload.sessionId === 'string' ? payload.sessionId : '',
+        imageId: typeof payload.imageId === 'string' ? payload.imageId : '',
+        url: typeof payload.url === 'string' ? payload.url : '',
+      });
+      setState('success');
+    } catch (error) {
+      clearProgressTimer();
+      setProgress(0);
+      setResponse(null);
+      setState('error');
+      setErrorMessage(getErrorMessage(error));
+    }
+  };
 
   return (
-    <section aria-label="Photo upload" className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-      <div className="space-y-2">
-        <h2 className="text-2xl font-semibold text-slate-950">Upload your photo</h2>
-        <p className="text-sm text-slate-700">Drag and drop an image here or choose a file to upload.</p>
+    <section
+      aria-labelledby="photo-upload-title"
+      className="rounded-lg border border-slate-300 bg-white p-6 text-slate-950 shadow-sm"
+    >
+      <div className="mb-4">
+        <h2 id="photo-upload-title" className="text-2xl font-semibold text-slate-950">
+          Upload your photo
+        </h2>
+        <p className="mt-2 text-sm text-slate-700">
+          Drag and drop an image here or choose a file to upload. Accepted formats: {formatAcceptedTypes(ACCEPTED_MIME_TYPES)}.
+        </p>
+      </div>
+
+      <div aria-live="polite" aria-atomic="true" className="mb-4 min-h-6 text-sm font-medium text-slate-900">
+        {state === 'idle' && <p role="status">Ready to upload your photo.</p>}
+        {state === 'dragging' && <p role="status">Drop your image to start uploading.</p>}
+        {state === 'uploading' && <p role="status">Uploading {uploadedFileName}… {progress}%</p>}
+        {state === 'error' && <p role="alert">{errorMessage}</p>}
+        {state === 'success' && response && <p role="status">Upload complete for {uploadedFileName}.</p>}
       </div>
 
       <div
         aria-label="Photo upload dropzone"
-        className={`mt-4 rounded-lg border-2 border-dashed p-6 text-center transition ${
-          status === 'dragging'
-            ? 'border-blue-600 bg-blue-50'
-            : status === 'error'
+        onDragOver={(event) => {
+          event.preventDefault();
+          if (state !== 'uploading') {
+            setState('dragging');
+          }
+        }}
+        onDragEnter={(event) => {
+          event.preventDefault();
+          if (state !== 'uploading') {
+            setState('dragging');
+          }
+        }}
+        onDragLeave={(event) => {
+          event.preventDefault();
+          if (state !== 'uploading') {
+            setState('idle');
+          }
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          const file = event.dataTransfer.files?.[0];
+          if (!file) {
+            setState('idle');
+            return;
+          }
+
+          void uploadFile(file);
+        }}
+        className={`rounded-lg border-2 border-dashed p-6 transition ${
+          state === 'dragging'
+            ? 'border-sky-500 bg-sky-50'
+            : state === 'error'
               ? 'border-red-400 bg-red-50'
-              : status === 'success'
-                ? 'border-green-500 bg-green-50'
-                : 'border-slate-300 bg-slate-50'
+              : state === 'success'
+                ? 'border-emerald-500 bg-emerald-50'
+                : 'border-slate-400 bg-slate-50'
         }`}
-        onDragLeave={handleDragLeave}
-        onDragOver={handleDragOver}
-        onDrop={handleDrop}
       >
-        <p className="text-sm font-medium text-slate-900">
-          {status === 'dragging' ? 'Drop your photo here' : 'Drag and drop your photo here'}
-        </p>
-        <p className="mt-2 text-xs text-slate-600">
-          Accepted formats: JPG, PNG, WebP. Maximum file size: {formatFileSize(MAX_FILE_SIZE_BYTES)}.
-        </p>
-        <button
-          className="mt-4 rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
-          disabled={status === 'uploading'}
-          onClick={() => inputRef.current?.click()}
-          type="button"
-        >
-          {browseLabel}
-        </button>
-        <input
-          ref={inputRef}
-          accept={ACCEPTED_TYPES.join(',')}
-          aria-label="Photo file input"
-          className="sr-only"
-          onChange={handleInputChange}
-          type="file"
-        />
+        <div className="flex flex-col items-start gap-4">
+          <div>
+            <p className="text-sm font-semibold text-slate-950">Drop your image here</p>
+            <p className="mt-1 text-sm text-slate-700">Maximum file size: 10 MB.</p>
+          </div>
+
+          <label className="inline-flex cursor-pointer items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700 focus-within:ring-2 focus-within:ring-slate-900 focus-within:ring-offset-2">
+            <span>Choose file</span>
+            <input
+              ref={inputRef}
+              type="file"
+              accept={ACCEPTED_MIME_TYPES.join(',')}
+              className="sr-only"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) {
+                  void uploadFile(file);
+                }
+              }}
+            />
+          </label>
+        </div>
       </div>
 
-      <div aria-live="polite" className="mt-4 space-y-2 text-sm">
-        {status === 'idle' ? <p className="text-slate-700">No file uploaded yet.</p> : null}
-        {status === 'dragging' ? <p className="text-blue-700">Drop the image to start uploading.</p> : null}
-        {status === 'uploading' ? (
-          <div>
-            <p className="font-medium text-slate-900">Uploading {uploadedFileName}...</p>
-            <p className="text-slate-700">Upload progress: {progress}%</p>
+      {state === 'uploading' && (
+        <div className="mt-4" aria-label="Upload progress">
+          <div className="mb-2 flex items-center justify-between text-sm text-slate-800">
+            <span>Upload progress</span>
+            <span>{progress}%</span>
           </div>
-        ) : null}
-        {status === 'success' ? (
-          <div>
-            <p className="font-medium text-green-700">Upload complete.</p>
-            {uploadedPhotoUrl ? (
-              <a className="text-blue-700 underline" href={uploadedPhotoUrl}>
-                {uploadedPhotoUrl}
-              </a>
-            ) : (
-              <p className="text-slate-700">Your photo was uploaded successfully.</p>
-            )}
+          <div className="h-3 w-full overflow-hidden rounded-full bg-slate-200">
+            <div
+              className="h-full rounded-full bg-sky-600 transition-all"
+              style={{ width: `${progress}%` }}
+            />
           </div>
-        ) : null}
-        {status === 'error' && error ? <p className="font-medium text-red-700">{error}</p> : null}
-      </div>
+        </div>
+      )}
+
+      {state === 'success' && response && (
+        <div
+          aria-label="Upload success"
+          className="mt-4 rounded-md border border-emerald-300 bg-emerald-50 p-4 text-emerald-900"
+        >
+          <p className="text-sm font-semibold">Photo uploaded successfully.</p>
+          <dl className="mt-2 space-y-1 text-sm">
+            <div>
+              <dt className="inline font-semibold">Session ID: </dt>
+              <dd className="inline">{response.sessionId || 'Unavailable'}</dd>
+            </div>
+            <div>
+              <dt className="inline font-semibold">Image ID: </dt>
+              <dd className="inline">{response.imageId || 'Unavailable'}</dd>
+            </div>
+            <div>
+              <dt className="inline font-semibold">URL: </dt>
+              <dd className="inline break-all">{response.url || 'Unavailable'}</dd>
+            </div>
+          </dl>
+        </div>
+      )}
     </section>
   );
 }
