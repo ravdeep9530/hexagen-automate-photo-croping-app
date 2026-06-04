@@ -1,89 +1,67 @@
-import type { ApiErrorResponse, PhotoStatusResponse } from '../../../types/api';
+import { mapPhotoSessionToStatus, type StoredPhotoSession } from '../../../lib/photo-status';
 
-type SessionRecord = {
-  sessionId: string;
-  uploadedPhotoUrl: string | null;
-  croppedPhotoUrl: string | null;
-  complianceStatus?: PhotoStatusResponse['complianceStatus'];
+class HttpError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+interface JsonResponse {
+  status: number;
+  body: unknown;
+}
+
+type SessionStore = Map<string, StoredPhotoSession>;
+
+type GlobalWithPhotoStore = typeof globalThis & {
+  __photoSessions__?: SessionStore;
 };
 
-type SessionStore = {
-  getSession?: (sessionId: string) => SessionRecord | null | undefined | Promise<SessionRecord | null | undefined>;
-  get?: (sessionId: string) => SessionRecord | null | undefined | Promise<SessionRecord | null | undefined>;
-  sessions?: Map<string, SessionRecord>;
-};
-
-type JsonResponse = Response & {
-  json(): Promise<ApiErrorResponse | PhotoStatusResponse>;
-};
-
-function jsonResponse(body: ApiErrorResponse | PhotoStatusResponse, status = 200): JsonResponse {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      'content-type': 'application/json',
-    },
-  }) as JsonResponse;
-}
-
-function resolveStore(): SessionStore | null {
-  const globalStore = globalThis as typeof globalThis & {
-    __PHOTO_SESSION_STORE__?: SessionStore;
-  };
-
-  return globalStore.__PHOTO_SESSION_STORE__ ?? null;
-}
-
-async function loadSession(sessionId: string): Promise<SessionRecord | null> {
-  const store = resolveStore();
-
-  if (!store) {
-    return null;
+function getSessionStore(): SessionStore {
+  const scopedGlobal = globalThis as GlobalWithPhotoStore;
+  if (!scopedGlobal.__photoSessions__) {
+    scopedGlobal.__photoSessions__ = new Map<string, StoredPhotoSession>();
   }
 
-  if (typeof store.getSession === 'function') {
-    return (await store.getSession(sessionId)) ?? null;
-  }
-
-  if (typeof store.get === 'function') {
-    return (await store.get(sessionId)) ?? null;
-  }
-
-  if (store.sessions instanceof Map) {
-    return store.sessions.get(sessionId) ?? null;
-  }
-
-  return null;
+  return scopedGlobal.__photoSessions__;
 }
 
-function badRequest(message: string) {
-  return jsonResponse({ message }, 400);
+function json(body: unknown, status = 200): JsonResponse {
+  return { status, body };
 }
 
-export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const sessionId = searchParams.get('sessionId')?.trim();
+export async function GET(request: Request): Promise<JsonResponse> {
+  const url = new URL(request.url);
+  const sessionId = url.searchParams.get('sessionId')?.trim();
 
   if (!sessionId) {
-    return badRequest('sessionId is required');
+    throw new HttpError(400, 'sessionId is required');
   }
 
-  const session = await loadSession(sessionId);
-
+  const session = getSessionStore().get(sessionId);
   if (!session) {
-    return jsonResponse({ message: 'Session not found' }, 404);
+    return json({ error: 'Photo session not found' }, 404);
   }
 
-  const hasUploaded = Boolean(session.uploadedPhotoUrl);
-  const hasCropped = Boolean(session.croppedPhotoUrl);
-  const complianceStatus = session.complianceStatus ?? (hasCropped ? 'cropped' : hasUploaded ? 'uploaded' : 'missing_upload');
+  return json({ sessionId, ...mapPhotoSessionToStatus(session) });
+}
 
-  return jsonResponse({
-    sessionId: session.sessionId,
-    hasUploaded,
-    hasCropped,
-    uploadedPhotoUrl: session.uploadedPhotoUrl,
-    croppedPhotoUrl: session.croppedPhotoUrl,
-    complianceStatus,
-  });
+export async function handleGetPhotoStatus(request: Request): Promise<JsonResponse> {
+  try {
+    return await GET(request);
+  } catch (error) {
+    if (error instanceof HttpError) {
+      return json({ error: error.message }, error.status);
+    }
+
+    return json({ error: 'Internal server error' }, 500);
+  }
+}
+
+export function __setPhotoSessionsForTests(store: SessionStore | undefined): void {
+  const scopedGlobal = globalThis as GlobalWithPhotoStore;
+  scopedGlobal.__photoSessions__ = store;
 }
