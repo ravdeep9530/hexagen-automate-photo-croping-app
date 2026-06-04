@@ -1,60 +1,97 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
-type GuidelineRequirement = {
-  id: string;
-  label: string;
-  description: string;
-};
+import type {
+  PhotoGuidelineRequirement,
+  PhotoGuidelineVisual,
+  PhotoGuidelinesResponse,
+} from '../types/api';
 
-type GuidelineVisual = {
-  id: string;
-  label: string;
-  assetUrl: string;
-  altText: string;
-};
+type FetchState = 'loading' | 'success' | 'empty' | 'error';
 
-type PhotoGuidelinesResponse = {
-  requirements: GuidelineRequirement[];
-  visuals: GuidelineVisual[];
-};
+function isRequirement(value: unknown): value is PhotoGuidelineRequirement {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
 
-type FetchState = 'loading' | 'error' | 'success';
+  const requirement = value as Partial<PhotoGuidelineRequirement>;
+  return (
+    typeof requirement.id === 'string' &&
+    typeof requirement.label === 'string' &&
+    typeof requirement.value === 'string'
+  );
+}
 
-const initialGuidelines: PhotoGuidelinesResponse = {
-  requirements: [],
-  visuals: [],
-};
+function isVisual(value: unknown): value is Partial<PhotoGuidelineVisual> & { id: string; title: string } {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
 
-export function PassportGuidelines() {
-  const [guidelines, setGuidelines] = useState<PhotoGuidelinesResponse>(initialGuidelines);
-  const [status, setStatus] = useState<FetchState>('loading');
-  const [error, setError] = useState<string | null>(null);
+  const visual = value as Partial<PhotoGuidelineVisual>;
+  return typeof visual.id === 'string' && typeof visual.title === 'string';
+}
+
+function normalizeResponse(payload: unknown): PhotoGuidelinesResponse {
+  if (!payload || typeof payload !== 'object') {
+    return { requirements: [], visuals: [] };
+  }
+
+  const data = payload as Partial<PhotoGuidelinesResponse>;
+
+  return {
+    requirements: Array.isArray(data.requirements) ? data.requirements.filter(isRequirement) : [],
+    visuals: Array.isArray(data.visuals) ? data.visuals.filter(isVisual).map((visual) => ({
+      id: visual.id,
+      title: visual.title,
+      imageUrl: typeof visual.imageUrl === 'string' ? visual.imageUrl : '',
+      altText: typeof visual.altText === 'string' ? visual.altText : '',
+    })) : [],
+  };
+}
+
+export default function PassportGuidelines() {
+  const [guidelines, setGuidelines] = useState<PhotoGuidelinesResponse>({
+    requirements: [],
+    visuals: [],
+  });
+  const [state, setState] = useState<FetchState>('loading');
+  const [errorMessage, setErrorMessage] = useState('');
+
+  const hasContent = useMemo(
+    () => guidelines.requirements.length > 0 || guidelines.visuals.length > 0,
+    [guidelines],
+  );
 
   const loadGuidelines = useCallback(async () => {
-    setStatus('loading');
-    setError(null);
+    setState('loading');
+    setErrorMessage('');
 
     try {
       const response = await fetch('/api/photoGuidelines');
-      const payload = (await response.json()) as Partial<PhotoGuidelinesResponse> & { message?: string };
+      const payload = await response.json();
 
       if (!response.ok) {
-        throw new Error(payload.message || 'Unable to load passport photo guidelines.');
+        throw new Error(
+          (payload && typeof payload === 'object' && 'error' in payload && typeof payload.error === 'string'
+            ? payload.error
+            : undefined) || 'Unable to load passport photo guidelines.',
+        );
       }
 
-      setGuidelines({
-        requirements: Array.isArray(payload.requirements) ? payload.requirements : [],
-        visuals: Array.isArray(payload.visuals) ? payload.visuals : [],
-      });
-      setStatus('success');
-    } catch (caughtError) {
-      setGuidelines(initialGuidelines);
-      setError(
-        caughtError instanceof Error ? caughtError.message : 'Unable to load passport photo guidelines.',
+      const nextGuidelines = normalizeResponse(payload);
+      setGuidelines(nextGuidelines);
+      setState(
+        nextGuidelines.requirements.length === 0 && nextGuidelines.visuals.length === 0 ? 'empty' : 'success',
       );
-      setStatus('error');
+    } catch (error) {
+      setGuidelines({ requirements: [], visuals: [] });
+      setErrorMessage(
+        error instanceof Error && error.message
+          ? error.message
+          : 'Unable to load passport photo guidelines.',
+      );
+      setState('error');
     }
   }, []);
 
@@ -62,88 +99,114 @@ export function PassportGuidelines() {
     void loadGuidelines();
   }, [loadGuidelines]);
 
-  const isEmpty =
-    status === 'success' && guidelines.requirements.length === 0 && guidelines.visuals.length === 0;
-
   return (
     <section
-      aria-label="Passport photo guidelines"
-      className="rounded-lg border border-slate-900 bg-white p-6 text-slate-950 shadow-sm"
+      aria-labelledby="passport-guidelines-title"
+      className="rounded-lg border border-slate-300 bg-white p-6 text-slate-950 shadow-sm"
     >
-      <div className="space-y-2">
-        <h2 className="text-2xl font-semibold">Passport photo guidelines</h2>
-        <p className="text-sm font-medium text-slate-800">
-          Review the official requirements before you upload or crop a photo.
+      <div className="mb-6">
+        <h2 id="passport-guidelines-title" className="text-2xl font-semibold text-slate-950">
+          Passport photo guidelines
+        </h2>
+        <p className="mt-2 text-sm text-slate-700">
+          Review the official photo requirements and examples before uploading your image.
         </p>
       </div>
 
-      <div aria-live="polite" className="mt-4 text-sm font-medium text-slate-950">
-        {status === 'loading' ? <p>Loading passport photo guidelines...</p> : null}
-        {status === 'error' ? <p>Unable to load guidelines. {error}</p> : null}
-        {isEmpty ? <p>No passport photo guidelines are available right now.</p> : null}
-        {status === 'success' && !isEmpty ? <p>Passport photo guidelines loaded.</p> : null}
+      <div aria-live="polite" aria-atomic="true" className="mb-4 min-h-6 text-sm font-medium text-slate-900">
+        {state === 'loading' && <p role="status">Loading passport photo guidelines…</p>}
+        {state === 'error' && <p role="alert">{errorMessage}</p>}
+        {state === 'empty' && <p role="status">No passport photo guidelines are available right now.</p>}
+        {state === 'success' && hasContent && <p role="status">Passport photo guidelines loaded.</p>}
       </div>
 
-      {status === 'error' ? (
-        <div className="mt-4 rounded-md border border-red-700 bg-red-50 p-4 text-slate-950">
-          <p className="text-sm font-medium">Check your connection and try again.</p>
+      {state === 'error' && (
+        <div
+          aria-label="Passport guidelines error"
+          className="rounded-md border border-red-300 bg-red-50 p-4 text-red-900"
+        >
+          <p className="text-sm">Please try again to view the latest passport photo requirements.</p>
           <button
-            aria-label="Retry loading passport photo guidelines"
-            className="mt-3 rounded-md border border-slate-950 bg-slate-950 px-4 py-2 text-sm font-semibold text-white"
+            type="button"
             onClick={() => {
               void loadGuidelines();
             }}
-            type="button"
+            className="mt-3 inline-flex items-center rounded-md bg-red-700 px-4 py-2 text-sm font-semibold text-white outline-none transition hover:bg-red-800 focus-visible:ring-2 focus-visible:ring-red-700 focus-visible:ring-offset-2"
           >
-            Retry
+            Retry loading guidelines
           </button>
         </div>
-      ) : null}
+      )}
 
-      {isEmpty ? (
+      {state === 'empty' && (
         <div
-          aria-label="Passport guideline details"
-          className="mt-6 rounded-md border border-slate-300 bg-slate-50 p-4 text-sm text-slate-950"
+          aria-label="Passport guidelines unavailable"
+          className="rounded-md border border-slate-300 bg-slate-50 p-4 text-slate-900"
         >
-          <p>Guideline details will appear here when the service returns requirement and visual data.</p>
+          <p className="text-sm">Requirements and visual examples will appear here when available.</p>
         </div>
-      ) : null}
+      )}
 
-      {status === 'success' && !isEmpty ? (
-        <div aria-label="Passport guideline details" className="mt-6 space-y-8">
-          <section>
-            <h3 className="text-lg font-semibold">Requirements</h3>
-            <ul className="mt-3 space-y-3">
+      {state === 'success' && hasContent && (
+        <div className="grid gap-6 lg:grid-cols-2">
+          <section
+            aria-labelledby="passport-requirements-heading"
+            className="rounded-md border border-slate-300 bg-slate-50 p-4"
+          >
+            <h3 id="passport-requirements-heading" className="text-lg font-semibold text-slate-950">
+              Requirements
+            </h3>
+            <dl className="mt-4 space-y-3">
               {guidelines.requirements.map((requirement) => (
-                <li key={requirement.id} className="rounded-md border border-slate-300 bg-slate-50 p-4">
-                  <h4 className="text-base font-semibold text-slate-950">{requirement.label}</h4>
-                  <p className="mt-1 text-sm text-slate-900">{requirement.description}</p>
-                </li>
+                <div key={requirement.id} className="rounded-md border border-slate-200 bg-white p-3">
+                  <dt className="text-sm font-semibold text-slate-950">{requirement.label}</dt>
+                  <dd className="mt-1 text-sm text-slate-800">{requirement.value}</dd>
+                </div>
               ))}
-            </ul>
+            </dl>
           </section>
 
-          <section>
-            <h3 className="text-lg font-semibold">Visual guidance</h3>
-            <ul className="mt-3 grid gap-4 sm:grid-cols-2">
-              {guidelines.visuals.map((visual) => (
-                <li key={visual.id} className="rounded-md border border-slate-300 bg-slate-50 p-4">
-                  <figure className="space-y-3">
-                    <img
-                      alt={visual.altText}
-                      className="h-auto w-full rounded border border-slate-300 bg-white"
-                      src={visual.assetUrl}
-                    />
-                    <figcaption>
-                      <p className="text-base font-semibold text-slate-950">{visual.label}</p>
-                    </figcaption>
-                  </figure>
-                </li>
-              ))}
+          <section
+            aria-labelledby="passport-visuals-heading"
+            className="rounded-md border border-slate-300 bg-slate-50 p-4"
+          >
+            <h3 id="passport-visuals-heading" className="text-lg font-semibold text-slate-950">
+              Visual examples
+            </h3>
+            <ul className="mt-4 space-y-4">
+              {guidelines.visuals.map((visual) => {
+                const hasImage = visual.imageUrl.trim().length > 0;
+                const altText = visual.altText.trim().length > 0 ? visual.altText : `${visual.title} example`;
+
+                return (
+                  <li key={visual.id} className="overflow-hidden rounded-md border border-slate-200 bg-white">
+                    {hasImage ? (
+                      <img
+                        src={visual.imageUrl}
+                        alt={altText}
+                        className="h-48 w-full bg-slate-200 object-cover"
+                      />
+                    ) : (
+                      <div
+                        aria-hidden="true"
+                        className="flex h-48 w-full items-center justify-center bg-slate-200 text-sm font-medium text-slate-700"
+                      >
+                        Visual preview unavailable
+                      </div>
+                    )}
+                    <div className="p-3">
+                      <p className="text-sm font-semibold text-slate-950">{visual.title}</p>
+                      {!hasImage && visual.altText.trim().length > 0 ? (
+                        <p className="mt-1 text-sm text-slate-800">{visual.altText}</p>
+                      ) : null}
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
           </section>
         </div>
-      ) : null}
+      )}
     </section>
   );
 }
