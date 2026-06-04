@@ -1,75 +1,106 @@
 import type { CropParameters } from './crop-parameters';
-import type { CroppedImage, CroppedImageComplianceStatus } from './cropped-image';
+import type { CroppedImage } from './cropped-image';
 import type { UserPhotoSession } from './session';
 import type { UploadedImage } from './uploaded-image';
 
-export type CreatePhotoSessionRequest = {
-  userId?: string | null;
-};
+export interface ApiError {
+  code: string;
+  message: string;
+  details?: string | null;
+}
 
-export type CreatePhotoSessionResponse = {
-  session: UserPhotoSession;
-};
-
-export type GetPhotoSessionResponse = {
-  session: UserPhotoSession;
-  image: UploadedImage | null;
-  croppedImage: CroppedImage | null;
-};
-
-export type PhotoStatusResponse = {
-  sessionId: string;
-  hasUploaded: boolean;
-  hasCropped: boolean;
-  uploadedPhotoUrl: string | null;
-  croppedPhotoUrl: string | null;
-  complianceStatus: 'missing_upload' | 'uploaded' | 'cropped';
-};
-
-export type PhotoGuidelinesResponse = {
-  requirements: Array<{
-    id: string;
-    label: string;
-    description: string;
-  }>;
-  visuals: Array<{
-    id: string;
-    label: string;
-    assetUrl: string;
-    altText: string;
-  }>;
-};
-
-export type UploadImageRequest = {
+export interface UploadImageRequest {
   sessionId: string;
   filename: string;
   mimetype: string;
-};
+  sizeBytes: number;
+}
 
-export type UploadImageResponse = {
-  image: UploadedImage;
-};
+export interface UploadImageResponse {
+  session: UserPhotoSession;
+  uploadedImage: UploadedImage;
+  success: boolean;
+  error?: ApiError;
+}
 
-export type UploadPhotoResponse = {
+export interface UploadPhotoResponse {
   sessionId: string;
   imageId: string;
   url: string;
-};
+}
 
-export type SaveCroppedPhotoRequest = CropParameters;
+export interface SaveCropRequest {
+  sessionId: string;
+  crop: CropParameters;
+}
 
-export type SaveCroppedPhotoResponse = {
+export interface SaveCropResponse {
+  session: UserPhotoSession;
+  uploadedImage: UploadedImage;
+  croppedImage: CroppedImage;
+  success: boolean;
+  error?: ApiError;
+}
+
+export interface SaveCroppedPhotoRequest {
+  imageId: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  aspectRatio: number;
+}
+
+export interface SaveCroppedPhotoResponse {
   croppedImageId: string;
   url: string;
-  complianceStatus: CroppedImageComplianceStatus;
-};
+  complianceStatus: 'pending' | 'compliant' | 'non_compliant';
+}
 
-export type CropImageRequest = CropParameters;
+export interface SessionStatusRequest {
+  sessionId: string;
+}
 
-export type CropImageResponse = {
-  croppedImage: CroppedImage;
-};
+export interface SessionStatusResponse {
+  session: UserPhotoSession;
+  uploadedImage: UploadedImage | null;
+  croppedImage: CroppedImage | null;
+  status: 'idle' | 'uploaded' | 'cropped' | 'error';
+  error?: ApiError;
+}
 
-export type ApiErrorResponse = {
-  message: string;
-};
+export interface CropGuidelinesResponse {
+  aspectRatio: number;
+  minWidth: number;
+  minHeight: number;
+  acceptedMimeTypes: string[];
+  maxFileSizeBytes: number;
+}
+
+export interface PhotoGuidelineRequirement {
+  id: string;
+  label: string;
+  value: string;
+}
+
+export interface PhotoGuidelineVisual {
+  id: string;
+  title: string;
+  imageUrl: string;
+  altText: string;
+}
+
+export interface PhotoGuidelinesResponse {
+  requirements: PhotoGuidelineRequirement[];
+  visuals: PhotoGuidelineVisual[];
+}
+
+export interface CleanupSessionRequest {
+  sessionId: string;
+}
+
+export interface CleanupSessionResponse {
+  sessionId: string;
+  cleaned: boolean;
+  error?: ApiError;
+}
