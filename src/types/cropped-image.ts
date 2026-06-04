@@ -1,10 +1,12 @@
-export type CroppedImageComplianceStatus = 'cropped';
-
-export type CroppedImage = {
+export interface CroppedImage {
   croppedImageId: string;
   imageId: string;
-  croppedPhotoUrl: string;
+  sessionId?: string;
+  storageUrl: string;
   width: number;
   height: number;
-  complianceStatus: CroppedImageComplianceStatus;
-};
+  format: string;
+  fileSizeBytes: number;
+  complianceStatus: 'pending' | 'compliant' | 'non_compliant';
+  createdAt: string;
+}
