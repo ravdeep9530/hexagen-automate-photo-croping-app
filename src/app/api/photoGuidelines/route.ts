@@ -1,24 +1,33 @@
-import { getPhotoGuidelines } from '../../../lib/guidelines';
-import type { ApiErrorResponse, PhotoGuidelinesResponse } from '../../../types/api';
+import type { ApiError, PhotoGuidelinesResponse } from '../../../types/api';
+import { getPhotoGuidelines } from '../../../lib/photo-guidelines';
 
-type JsonResponse = Response & {
-  json(): Promise<ApiErrorResponse | PhotoGuidelinesResponse>;
-};
-
-function jsonResponse(body: ApiErrorResponse | PhotoGuidelinesResponse, status = 200): JsonResponse {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      'content-type': 'application/json',
-    },
-  }) as JsonResponse;
+interface JsonResponse {
+  status: number;
+  body: PhotoGuidelinesResponse | { error: string } | { error: ApiError };
 }
 
-export async function GET() {
+function json(body: JsonResponse['body'], status = 200): JsonResponse {
+  return { status, body };
+}
+
+function createInternalServerError(): ApiError {
+  return {
+    code: 'INTERNAL_SERVER_ERROR',
+    message: 'Internal server error',
+    details: null,
+  };
+}
+
+export async function GET(): Promise<JsonResponse> {
+  const { requirements, visuals } = getPhotoGuidelines();
+
+  return json({ requirements, visuals });
+}
+
+export async function handleGetPhotoGuidelines(): Promise<JsonResponse> {
   try {
-    const guidelines = getPhotoGuidelines();
-    return jsonResponse(guidelines);
+    return await GET();
   } catch {
-    return jsonResponse({ message: 'Failed to load photo guidelines' }, 500);
+    return json({ error: createInternalServerError() }, 500);
   }
 }
