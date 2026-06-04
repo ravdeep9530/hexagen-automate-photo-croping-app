@@ -1,133 +1,132 @@
-import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import sharp from 'sharp';
 
-import type { CropParameters, CropValidationResult } from '../types/crop-parameters';
+import { uploadToS3 as uploadBufferToS3 } from './s3-storage';
+import type { CropParameters } from '../types/crop-parameters';
 
-export const SUPPORTED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+export const ALLOWED_IMAGE_MIME_TYPES = ['image/jpeg', 'image/png'] as const;
 export const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024;
-export const SUPPORTED_UPLOAD_MIME_TYPES = ['image/jpeg', 'image/png'] as const;
-export const MAX_UPLOAD_IMAGE_SIZE_BYTES = MAX_IMAGE_SIZE_BYTES;
-const ASPECT_RATIO_TOLERANCE = 0.01;
+export const CROP_ASPECT_RATIO_TOLERANCE = 0.01;
+const FORMAT_TO_MIME_TYPE: Record<string, string> = {
+  jpeg: 'image/jpeg',
+  jpg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+};
+
+export interface ImageValidationResult {
+  ok: boolean;
+  reason?: 'missing' | 'too_large' | 'unsupported_type' | 'invalid_image';
+  width?: number;
+  height?: number;
+}
+
+export interface CropValidationResult {
+  width: number;
+  height: number;
+  left: number;
+  top: number;
+}
+
+export interface ImageMetadata {
+  width: number;
+  height: number;
+  format?: string;
+}
 
 export async function validateImage(file: Buffer, mimetype: string): Promise<boolean> {
-  return file.length > 0 && file.length <= MAX_IMAGE_SIZE_BYTES && SUPPORTED_MIME_TYPES.has(mimetype);
+  const result = await validateImageUpload(file, mimetype);
+  return result.ok;
 }
 
-export function isSupportedUploadMimeType(mimetype: string): mimetype is (typeof SUPPORTED_UPLOAD_MIME_TYPES)[number] {
-  return SUPPORTED_UPLOAD_MIME_TYPES.includes(mimetype as (typeof SUPPORTED_UPLOAD_MIME_TYPES)[number]);
-}
+export async function validateImageUpload(file: Buffer | null | undefined, mimetype: string): Promise<ImageValidationResult> {
+  if (!Buffer.isBuffer(file) || file.length === 0) {
+    return { ok: false, reason: 'missing' };
+  }
 
-export function validateUploadImageSize(size: number): boolean {
-  return size > 0 && size <= MAX_UPLOAD_IMAGE_SIZE_BYTES;
-}
+  if (file.length > MAX_IMAGE_SIZE_BYTES) {
+    return { ok: false, reason: 'too_large' };
+  }
 
-export function validateCropParameters(
-  params: CropParameters,
-  imageDimensions: { width: number; height: number },
-): CropValidationResult {
-  const numericFields = {
-    x: params.x,
-    y: params.y,
-    width: params.width,
-    height: params.height,
-    aspectRatio: params.aspectRatio,
-  };
+  if (!ALLOWED_IMAGE_MIME_TYPES.includes(mimetype as (typeof ALLOWED_IMAGE_MIME_TYPES)[number])) {
+    return { ok: false, reason: 'unsupported_type' };
+  }
 
-  for (const [field, value] of Object.entries(numericFields)) {
-    if (typeof value !== 'number' || Number.isNaN(value) || !Number.isFinite(value)) {
-      return { valid: false, message: `${field} must be a finite number` };
+  try {
+    const metadata = await sharp(file).metadata();
+    const detectedMimeType = metadata.format ? FORMAT_TO_MIME_TYPE[metadata.format] : undefined;
+
+    if (!detectedMimeType || detectedMimeType !== mimetype) {
+      return { ok: false, reason: 'invalid_image' };
     }
-  }
 
-  if (!params.imageId || typeof params.imageId !== 'string') {
-    return { valid: false, message: 'imageId is required' };
-  }
+    if (!metadata.width || !metadata.height || metadata.width <= 0 || metadata.height <= 0) {
+      return { ok: false, reason: 'invalid_image' };
+    }
 
-  if (params.x < 0 || params.y < 0) {
-    return { valid: false, message: 'Crop coordinates must be greater than or equal to 0' };
+    return { ok: true, width: metadata.width, height: metadata.height };
+  } catch {
+    return { ok: false, reason: 'invalid_image' };
   }
-
-  if (params.width <= 0 || params.height <= 0) {
-    return { valid: false, message: 'Crop width and height must be greater than 0' };
-  }
-
-  if (params.x + params.width > imageDimensions.width || params.y + params.height > imageDimensions.height) {
-    return { valid: false, message: 'Crop area exceeds image bounds' };
-  }
-
-  const actualAspectRatio = params.width / params.height;
-  if (Math.abs(actualAspectRatio - params.aspectRatio) > ASPECT_RATIO_TOLERANCE) {
-    return { valid: false, message: 'Crop aspect ratio does not match the requested aspect ratio' };
-  }
-
-  return { valid: true };
 }
 
-export async function getImageDimensions(file: Buffer): Promise<{ width: number; height: number }> {
+export async function getImageMetadata(file: Buffer): Promise<ImageMetadata> {
   const metadata = await sharp(file).metadata();
 
-  if (!metadata.width || !metadata.height) {
-    throw new Error('Unable to determine image dimensions');
+  if (!metadata.width || !metadata.height || metadata.width <= 0 || metadata.height <= 0) {
+    throw new Error('Unable to determine image dimensions.');
   }
 
   return {
     width: metadata.width,
     height: metadata.height,
+    format: metadata.format,
   };
 }
 
+export function validateCropBounds(params: CropParameters, image: { width: number; height: number }): CropValidationResult {
+  const width = Math.round(params.width);
+  const height = Math.round(params.height);
+  const left = Math.round(params.x);
+  const top = Math.round(params.y);
+
+  if ([width, height, left, top, params.aspectRatio].some((value) => !Number.isFinite(value))) {
+    throw new Error('Crop parameters must be valid numbers.');
+  }
+
+  if (left < 0 || top < 0) {
+    throw new Error('Crop coordinates must be greater than or equal to zero.');
+  }
+
+  if (width <= 0 || height <= 0) {
+    throw new Error('Crop width and height must be greater than zero.');
+  }
+
+  if (left + width > image.width || top + height > image.height) {
+    throw new Error('Crop area exceeds the image bounds.');
+  }
+
+  const actualAspectRatio = width / height;
+  if (Math.abs(actualAspectRatio - params.aspectRatio) > CROP_ASPECT_RATIO_TOLERANCE) {
+    throw new Error('Crop aspect ratio does not match the requested aspect ratio.');
+  }
+
+  return { width, height, left, top };
+}
+
 export async function cropImage(params: CropParameters, file: Buffer): Promise<Buffer> {
-  const { x, y, width, height } = params;
+  const metadata = await getImageMetadata(file);
+  const { width, height, left, top } = validateCropBounds(params, metadata);
 
   return sharp(file)
-    .extract({ left: Math.round(x), top: Math.round(y), width: Math.round(width), height: Math.round(height) })
+    .extract({ left, top, width, height })
+    .jpeg()
     .toBuffer();
 }
 
-function getRequiredEnv(name: string): string {
-  const value = process.env[name];
-
-  if (!value) {
-    throw new Error(`Missing required environment variable: ${name}`);
-  }
-
-  return value;
-}
-
 export async function uploadToStorage(buffer: Buffer, filename: string): Promise<string> {
-  const region = getRequiredEnv('AWS_REGION');
-  const bucket = getRequiredEnv('AWS_S3_BUCKET');
-  const accessKeyId = getRequiredEnv('AWS_ACCESS_KEY_ID');
-  const secretAccessKey = getRequiredEnv('AWS_SECRET_ACCESS_KEY');
-  const endpoint = process.env.AWS_S3_ENDPOINT;
-  const publicBaseUrl = process.env.AWS_S3_PUBLIC_URL;
-
-  const client = new S3Client({
-    region,
-    credentials: {
-      accessKeyId,
-      secretAccessKey,
-    },
-    ...(endpoint ? { endpoint } : {}),
-    forcePathStyle: Boolean(endpoint),
+  return uploadBufferToS3({
+    buffer,
+    key: filename,
+    contentType: 'image/jpeg',
   });
-
-  await client.send(
-    new PutObjectCommand({
-      Bucket: bucket,
-      Key: filename,
-      Body: buffer,
-      ACL: 'public-read',
-    }),
-  );
-
-  if (publicBaseUrl) {
-    return `${publicBaseUrl.replace(/\/$/, '')}/${filename}`;
-  }
-
-  if (endpoint) {
-    return `${endpoint.replace(/\/$/, '')}/${bucket}/${filename}`;
-  }
-
-  return `https://${bucket}.s3.${region}.amazonaws.com/${filename}`;
 }
